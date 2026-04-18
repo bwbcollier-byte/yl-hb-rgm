@@ -1,0 +1,72 @@
+name: RealGM NBA Player Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_players:
+        description: "Players to process (0 = all)"
+        required: false
+        default: "0"
+        type: string
+      max_news_pages:
+        description: "News pages per player (0 = all)"
+        required: false
+        default: "5"
+        type: string
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Notify Supabase — start
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/log_workflow_run" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"p_workflow_id": ${{ vars.WORKFLOW_ID_REALGM_PLAYER_SCRAPER }}, "p_status": "running", "p_run_id": "${{ github.run_id }}"}'
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run RealGM NBA Player Scraper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          MAX_PLAYERS: ${{ github.event.inputs.max_players || '0' }}
+          MAX_NEWS_PAGES: ${{ github.event.inputs.max_news_pages || '5' }}
+          WORKFLOW_ID: ${{ vars.WORKFLOW_ID_REALGM_PLAYER_SCRAPER }}
+          SOCIAL_TYPES: "REALGM,realgm"
+          SPORT_LABEL: "NBA"
+        run: npx ts-node --transpile-only src/realgm-player-scraper.ts
+
+      - name: Notify Supabase — result
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          DURATION=$(( $(date +%s) - $START_TIME ))
+          STATUS="${{ job.status }}"
+          PAYLOAD=$(printf '{"p_workflow_id": ${{ vars.WORKFLOW_ID_REALGM_PLAYER_SCRAPER }}, "p_status": "%s", "p_duration_secs": %s, "p_run_id": "${{ github.run_id }}"}' "$STATUS" "$DURATION")
+          curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/log_workflow_run" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD"
