@@ -237,28 +237,24 @@ async function scrapeNews(): Promise<void> {
     await logWorkflowRun('running');
 
     // -- Collect articles from listing pages --
-    const allArticles: Article[] = [];
+    // Track seen wiretap links across pages — if a page adds no new articles,
+    // RealGM has no more pages (pagination parameter is being ignored) so we stop.
+    const allArticlesDeduped: Article[] = [];
+    const seenLinks = new Set<string>();
+
     for (let page = 1; MAX_PAGES === 0 || page <= MAX_PAGES; page++) {
         const pageUrl = page === 1 ? NEWS_URL : `${NEWS_URL}?page=${page}`;
         console.log(`Fetching news page ${page}: ${pageUrl}`);
         const arts = await fetchNewsPage(pageUrl);
-        console.log(`  Found ${arts.length} article(s)`);
-        if (arts.length === 0) break;
-        allArticles.push(...arts);
-        // Stop paginating if clearly at end
-        if (arts.length < 5) break;
+        const newArts = arts.filter(a => !seenLinks.has(a.link));
+        arts.forEach(a => seenLinks.add(a.link));
+        console.log(`  Found ${arts.length} article(s), ${newArts.length} new`);
+        if (newArts.length === 0) { console.log('  No new articles — end of pagination'); break; }
+        allArticlesDeduped.push(...newArts);
+        if (arts.length < 5) break; // clearly last page
     }
 
-    // Deduplicate across pages — same article can appear on multiple listing pages
-    const seenLinks = new Set<string>();
-    const uniqueArticles = allArticles.filter(a => {
-        if (seenLinks.has(a.link)) return false;
-        seenLinks.add(a.link);
-        return true;
-    });
-    console.log(`\nTotal articles found: ${allArticles.length} (${uniqueArticles.length} unique)`);
-    const allArticlesDeduped = uniqueArticles;
-
+    console.log(`\nTotal unique articles: ${allArticlesDeduped.length}`);
     if (allArticlesDeduped.length === 0) {
         console.warn('  No articles found — check selector or proxy.');
         await logWorkflowRun('success', 0);
@@ -346,8 +342,13 @@ async function scrapeNews(): Promise<void> {
             }
         }
         if (insertError) {
-            console.error(`  [ERR] ${insertError.message}`);
-            failedCount++;
+            // Duplicate = already in DB from a previous run, not a real error
+            if (insertError.message.includes('duplicate key') || insertError.message.includes('unique constraint')) {
+                console.log(`  [SKIP] already exists`);
+            } else {
+                console.error(`  [ERR] ${insertError.message}`);
+                failedCount++;
+            }
         }
     }
 
