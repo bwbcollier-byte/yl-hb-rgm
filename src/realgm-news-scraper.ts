@@ -13,8 +13,13 @@ if (!RAPIDAPI_KEY) {
     process.exit(1);
 }
 
-const BASE_URL    = 'https://basketball.realgm.com';
-const NEWS_URL    = `${BASE_URL}/nba/news`;
+// Sport-specific config — set via env vars in each workflow
+const BASE_URL     = (process.env.BASE_URL   || 'https://basketball.realgm.com').replace(/\/$/, '');
+const NEWS_PATH    =  process.env.NEWS_PATH   || '/nba/news';
+const SPORT_LABEL  =  process.env.SPORT_LABEL || 'NBA';
+const SOCIAL_TYPES = (process.env.SOCIAL_TYPES || 'realgm,REALGM').split(',').map(s => s.trim());
+
+const NEWS_URL    = `${BASE_URL}${NEWS_PATH}`;
 const FETCH_DELAY = 1500; // ms — polite crawling through proxy
 
 // ---------------------------------------------------------------------------
@@ -213,7 +218,7 @@ async function resolvePlayerUrlsToUuids(playerUrls: string[]): Promise<Record<st
         .from('hb_socials')
         .select('social_url, linked_talent')
         .not('linked_talent', 'is', null)
-        .in('type', ['realgm', 'REALGM'])
+        .in('type', SOCIAL_TYPES)
         .in('social_url', playerUrls);
 
     if (error) {
@@ -236,7 +241,7 @@ async function resolvePlayerUrlsToUuids(playerUrls: string[]): Promise<Record<st
 
 async function scrapeNews(): Promise<void> {
     const startTime = Date.now();
-    console.log('=== RealGM NBA News Scraper ===');
+    console.log(`=== RealGM ${SPORT_LABEL} News Scraper ===`);
     console.log(`Checking ${MAX_PAGES === 0 ? 'all' : MAX_PAGES} news page(s)\n`);
 
     await logWorkflowRun('running');
