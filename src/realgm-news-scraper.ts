@@ -45,37 +45,34 @@ interface Article {
 
 async function fetchViaProxy(url: string): Promise<string | null> {
     await new Promise(r => setTimeout(r, FETCH_DELAY));
-    const proxyUrl = `https://proxycrawl-crawling.p.rapidapi.com/?url=${encodeURIComponent(url)}`;
-    try {
-        const res = await fetch(proxyUrl, {
-            headers: {
-                'x-rapidapi-key':  RAPIDAPI_KEY,
-                'x-rapidapi-host': 'proxycrawl-crawling.p.rapidapi.com',
-            },
-        });
-        if (!res.ok) {
-            // Retry once with javascript=true on 5xx
-            if (res.status >= 500) {
-                console.warn(`  [HTTP ${res.status}] retrying with JS rendering...`);
-                await new Promise(r => setTimeout(r, 2000));
-                const res2 = await fetch(
-                    `https://proxycrawl-crawling.p.rapidapi.com/?url=${encodeURIComponent(url)}&javascript=true`,
-                    { headers: { 'x-rapidapi-key': RAPIDAPI_KEY, 'x-rapidapi-host': 'proxycrawl-crawling.p.rapidapi.com' } }
-                );
-                if (!res2.ok) {
-                    console.warn(`  [HTTP ${res2.status}] ${url}`);
-                    return null;
-                }
-                return await res2.text();
-            }
-            console.warn(`  [HTTP ${res.status}] ${url}`);
-            return null;
+
+    // JS rendering is more reliable against RealGM's bot detection.
+    // Try up to 3 times with increasing back-off delays.
+    const attempts = [
+        { js: true,  delay: 0    },
+        { js: true,  delay: 3000 },
+        { js: false, delay: 5000 },
+    ];
+
+    for (const { js, delay } of attempts) {
+        if (delay > 0) await new Promise(r => setTimeout(r, delay));
+        const proxyUrl = `https://proxycrawl-crawling.p.rapidapi.com/?url=${encodeURIComponent(url)}${js ? '&javascript=true' : ''}`;
+        try {
+            const res = await fetch(proxyUrl, {
+                headers: {
+                    'x-rapidapi-key':  RAPIDAPI_KEY,
+                    'x-rapidapi-host': 'proxycrawl-crawling.p.rapidapi.com',
+                },
+            });
+            if (res.ok) return await res.text();
+            console.warn(`  [HTTP ${res.status}${js ? ' js' : ''}] retrying...`);
+        } catch (e: any) {
+            console.warn(`  [FETCH ERR] ${url}: ${e.message}`);
         }
-        return await res.text();
-    } catch (e: any) {
-        console.warn(`  [FETCH ERR] ${url}: ${e.message}`);
-        return null;
     }
+
+    console.warn(`  [FAILED] all attempts exhausted for ${url}`);
+    return null;
 }
 
 // Parse a RealGM date string like "Apr 17, 2026 8:43 AM" → ISO
