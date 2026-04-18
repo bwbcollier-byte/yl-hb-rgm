@@ -190,20 +190,20 @@ async function fetchNewsPage(pageUrl: string): Promise<Article[]> {
 async function resolvePlayerIdsToUuids(playerIds: string[]): Promise<Record<string, string>> {
     if (playerIds.length === 0) return {};
 
-    // Primary: type='realgm' + identifier match (fastest, index-backed)
-    // Secondary: any social_url containing a RealGM player URL (catches entries stored under different types)
+    // Primary: type='realgm' or 'REALGM' + identifier match (fastest, index-backed)
+    // Secondary: match by social_url pattern — catches entries regardless of identifier value
     const [byIdentifier, byUrl] = await Promise.all([
         supabase
             .from('hb_socials')
             .select('identifier, linked_talent')
             .not('linked_talent', 'is', null)
-            .eq('type', 'realgm')
+            .in('type', ['realgm', 'REALGM'])
             .in('identifier', playerIds),
         supabase
             .from('hb_socials')
             .select('social_url, linked_talent')
             .not('linked_talent', 'is', null)
-            .ilike('social_url', '%basketball.realgm.com/player/%'),
+            .in('type', ['realgm', 'REALGM']),
     ]);
 
     const idToUuid: Record<string, string> = {};
