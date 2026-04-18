@@ -206,8 +206,19 @@ async function fetchNewsPage(pageUrl: string): Promise<NewsPageResult> {
     });
 
     // Find "Older Wiretaps" link for next page — href="/nba/news/older/N"
-    const olderHref = $('a[href*="/older/"]').first().attr('href') || null;
-    const nextUrl   = olderHref ? (olderHref.startsWith('http') ? olderHref : `${BASE_URL}${olderHref}`) : null;
+    // There may also be a "Newer Wiretaps" link on paginated pages (e.g. /older/1).
+    // Pick the link with the highest /older/N number — that's always the forward direction.
+    let maxOlderN = 0;
+    let olderHref: string | null = null;
+    $('a[href*="/older/"]').each((_, a) => {
+        const h = $(a).attr('href') || '';
+        const m = h.match(/\/older\/(\d+)/);
+        if (m && parseInt(m[1]) > maxOlderN) {
+            maxOlderN = parseInt(m[1]);
+            olderHref = h;
+        }
+    });
+    const nextUrl = olderHref ? (olderHref.startsWith('http') ? olderHref : `${BASE_URL}${olderHref}`) : null;
 
     return { articles, nextUrl };
 }
