@@ -4,7 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       max_players:
-        description: "Players to process (0 = all)"
+        description: "Players to process (0 = all). Use ~500 per batch run."
+        required: false
+        default: "500"
+        type: string
+      player_offset:
+        description: "Skip first N players (for batching: 0, 500, 1000, 1500...)"
         required: false
         default: "0"
         type: string
@@ -49,7 +54,8 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
-          MAX_PLAYERS: ${{ github.event.inputs.max_players || '0' }}
+          MAX_PLAYERS: ${{ github.event.inputs.max_players || '500' }}
+          PLAYER_OFFSET: ${{ github.event.inputs.player_offset || '0' }}
           MAX_NEWS_PAGES: ${{ github.event.inputs.max_news_pages || '5' }}
           WORKFLOW_ID: ${{ vars.WORKFLOW_ID_REALGM_PLAYER_SCRAPER }}
           SOCIAL_TYPES: "REALGM,realgm"

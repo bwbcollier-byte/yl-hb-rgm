@@ -12,8 +12,9 @@ const BASE_URL       = 'https://basketball.realgm.com';
 const SOCIAL_TYPES   = (process.env.SOCIAL_TYPES   || 'REALGM,realgm').split(',').map(s => s.trim());
 const SPORT_LABEL    =  process.env.SPORT_LABEL    || 'NBA';
 const RAPIDAPI_KEY   =  process.env.RAPIDAPI_KEY!;
-const MAX_PLAYERS    = parseInt(process.env.MAX_PLAYERS    || '0');  // 0 = all
-const MAX_NEWS_PAGES = parseInt(process.env.MAX_NEWS_PAGES || '5');  // per player, 0 = all
+const MAX_PLAYERS    = parseInt(process.env.MAX_PLAYERS    || '0');   // 0 = all
+const PLAYER_OFFSET  = parseInt(process.env.PLAYER_OFFSET  || '0');   // skip first N players (for batching)
+const MAX_NEWS_PAGES = parseInt(process.env.MAX_NEWS_PAGES || '5');   // per player, 0 = all
 const WORKFLOW_ID    = process.env.WORKFLOW_ID ? parseInt(process.env.WORKFLOW_ID) : null;
 const FETCH_DELAY    = 2000; // ms between proxy requests
 
@@ -336,7 +337,7 @@ async function resolvePlayerUrlsToUuids(playerUrls: string[]): Promise<Record<st
     let lastError: any          = null;
 
     for (let attempt = 1; attempt <= 3; attempt++) {
-        if (attempt > 1) await new Promise(r => setTimeout(r, 3000));
+        if (attempt > 1) await new Promise(r => setTimeout(r, 5000));
         const { data: rows, error } = await supabase
             .from('hb_socials')
             .select('social_url, linked_talent')
@@ -523,21 +524,21 @@ async function upsertAgentContact(agentInfo: AgentInfo): Promise<{ contactId: st
 // ---------------------------------------------------------------------------
 
 async function addToUuidArray(table: string, rowId: string, column: string, uuid: string): Promise<void> {
-    const { data: row, error: fetchErr } = await supabase
-        .from(table)
-        .select(column)
-        .eq('id', rowId)
-        .single();
-    if (fetchErr) { console.warn(`    [WARN] fetch ${table}.${column}: ${fetchErr.message}`); return; }
-
-    const existing: string[] = row?.[column] ?? [];
-    if (existing.includes(uuid)) return; // already there
-
-    const { error: updErr } = await supabase
-        .from(table)
-        .update({ [column]: [...existing, uuid] })
-        .eq('id', rowId);
-    if (updErr) console.warn(`    [WARN] update ${table}.${column}: ${updErr.message}`);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        if (attempt > 1) await new Promise(r => setTimeout(r, 3000));
+        const { data: row, error: fetchErr } = await supabase
+            .from(table).select(column).eq('id', rowId).single();
+        if (fetchErr) {
+            console.warn(`    [WARN] fetch ${table}.${column} attempt ${attempt}: ${fetchErr.message}`);
+            continue;
+        }
+        const existing: string[] = row?.[column] ?? [];
+        if (existing.includes(uuid)) return; // already there
+        const { error: updErr } = await supabase
+            .from(table).update({ [column]: [...existing, uuid] }).eq('id', rowId);
+        if (!updErr) return;
+        console.warn(`    [WARN] update ${table}.${column} attempt ${attempt}: ${updErr.message}`);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -749,12 +750,13 @@ async function run(): Promise<void> {
         if (!loaded || from < 0) break;
     }
 
-    const limit = MAX_PLAYERS > 0 ? MAX_PLAYERS : socials.length;
-    console.log(`Found ${socials.length} REALGM players, processing ${limit}\n`);
+    const batch   = PLAYER_OFFSET > 0 ? socials.slice(PLAYER_OFFSET) : socials;
+    const limit   = MAX_PLAYERS > 0 ? MAX_PLAYERS : batch.length;
+    console.log(`Found ${socials.length} REALGM players, offset=${PLAYER_OFFSET}, processing ${limit}\n`);
 
     let totalInserted = 0, totalFailed = 0;
     for (let i = 0; i < limit; i++) {
-        const social = socials[i];
+        const social = batch[i];
         try {
             await scrapePlayer(social);
         } catch (e: any) {
