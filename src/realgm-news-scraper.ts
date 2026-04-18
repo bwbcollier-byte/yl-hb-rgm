@@ -88,6 +88,20 @@ function extractPlayerId(href: string): string | null {
     return m ? m[1] : null;
 }
 
+// Parse "Dan Woike, Sam Amick/The Athletic" → { publication: "The Athletic", author: "Dan Woike & Sam Amick" }
+// If no "/" present the whole string is the publication with no separate author.
+function parseSourceCredit(raw: string | null): { publication: string | null; author: string | null } {
+    if (!raw) return { publication: null, author: null };
+    const slashIdx = raw.lastIndexOf('/');
+    if (slashIdx === -1) return { publication: raw.trim() || null, author: null };
+    const authorPart = raw.substring(0, slashIdx).trim();
+    const pubPart    = raw.substring(slashIdx + 1).trim();
+    const author     = authorPart
+        ? authorPart.split(',').map(s => s.trim()).filter(Boolean).join(' & ')
+        : null;
+    return { publication: pubPart || null, author: author || null };
+}
+
 async function logWorkflowRun(status: string, durationSecs?: number, lastError?: string) {
     if (!WORKFLOW_ID) return;
     try {
@@ -176,24 +190,38 @@ async function fetchNewsPage(pageUrl: string): Promise<Article[]> {
 async function resolvePlayerIdsToUuids(playerIds: string[]): Promise<Record<string, string>> {
     if (playerIds.length === 0) return {};
 
-    const { data, error } = await supabase
-        .from('hb_socials')
-        .select('identifier, linked_talent')
-        .not('linked_talent', 'is', null)
-        .eq('type', 'realgm')
-        .in('identifier', playerIds);
-
-    if (error) {
-        console.warn(`  [WARN] hb_socials lookup: ${error.message}`);
-        return {};
-    }
+    // Primary: type='realgm' + identifier match (fastest, index-backed)
+    // Secondary: any social_url containing a RealGM player URL (catches entries stored under different types)
+    const [byIdentifier, byUrl] = await Promise.all([
+        supabase
+            .from('hb_socials')
+            .select('identifier, linked_talent')
+            .not('linked_talent', 'is', null)
+            .eq('type', 'realgm')
+            .in('identifier', playerIds),
+        supabase
+            .from('hb_socials')
+            .select('social_url, linked_talent')
+            .not('linked_talent', 'is', null)
+            .ilike('social_url', '%basketball.realgm.com/player/%'),
+    ]);
 
     const idToUuid: Record<string, string> = {};
-    for (const row of (data || [])) {
+
+    for (const row of (byIdentifier.data || [])) {
         if (row.identifier && row.linked_talent) {
             idToUuid[row.identifier] = row.linked_talent;
         }
     }
+    // Secondary: extract player ID from the social_url and match against our needed IDs
+    const playerIdSet = new Set(playerIds);
+    for (const row of (byUrl.data || [])) {
+        const id = extractPlayerId(row.social_url || '');
+        if (id && playerIdSet.has(id) && row.linked_talent && !idToUuid[id]) {
+            idToUuid[id] = row.linked_talent;
+        }
+    }
+
     return idToUuid;
 }
 
@@ -237,14 +265,23 @@ async function scrapeNews(): Promise<void> {
         return;
     }
 
-    // -- De-dupe against news table by source_link --
+    // -- De-dupe against news table --
+    // Check both the external source URL (new schema) and the wiretap URL (old schema / fallback)
+    // so already-inserted records are correctly skipped regardless of which URL was stored.
+    const allLinksToCheck = [
+        ...allArticlesDeduped.map(a => a.sourceHref).filter(Boolean) as string[],
+        ...allArticlesDeduped.map(a => a.link),
+    ];
     const { data: existing } = await supabase
         .from('news')
         .select('source_link')
-        .in('source_link', allArticlesDeduped.map(a => a.link));
+        .in('source_link', allLinksToCheck);
 
     const existingLinks = new Set((existing || []).map(e => e.source_link));
-    const newArticles = allArticlesDeduped.filter(a => !existingLinks.has(a.link));
+    const newArticles = allArticlesDeduped.filter(a =>
+        !existingLinks.has(a.sourceHref || '') &&
+        !existingLinks.has(a.link)
+    );
 
     console.log(`Already in DB: ${allArticlesDeduped.length - newArticles.length} | New to process: ${newArticles.length}\n`);
 
@@ -269,16 +306,22 @@ async function scrapeNews(): Promise<void> {
         console.log(`[INS] ${article.title}`);
         console.log(`  players: [${article.playerIds.join(', ')}] → ${talentUuids.length} UUID(s)`);
 
+        const { publication, author } = parseSourceCredit(article.sourceName);
+        const sourceName = publication
+            ? (author ? `${publication} — ${author}` : publication)
+            : 'RealGM Wiretap';
+        const sourceLink = article.sourceHref || article.link; // prefer external URL
+
         const notes: string[] = [];
         if (!article.imgSrc) notes.push('image:no_thumbnail');
-        if (article.sourceHref) notes.push(`original_source:${article.sourceHref}`);
+        notes.push(`realgm_wiretap:${article.link}`); // always store wiretap URL for reference
 
         const record = {
             article_title:     article.title,
             article_heading:   null,
             article:           article.body,
-            source_name:       article.sourceName ? `RealGM Wiretap — ${article.sourceName}` : 'RealGM Wiretap',
-            source_link:       article.link,
+            source_name:       sourceName,
+            source_link:       sourceLink,
             image_primary:     article.imgSrc,
             published:         article.published,
             status:            'in progress',
