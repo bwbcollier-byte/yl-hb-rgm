@@ -30,7 +30,8 @@ interface Article {
     body:        string | null;
     sourceName:  string | null; // original publication, e.g. "The Athletic"
     sourceHref:  string | null; // external article URL
-    playerIds:   string[];      // RealGM player IDs from Tags section
+    playerIds:   string[];      // RealGM player IDs extracted from tag URLs
+    playerUrls:  string[];      // full absolute RealGM player URLs (for exact social_url lookup)
 }
 
 // ---------------------------------------------------------------------------
@@ -170,14 +171,19 @@ async function fetchNewsPage(pageUrl: string): Promise<Article[]> {
         const sourceName  = $sourceLink.text().trim() || null;
         const sourceHref  = $sourceLink.attr('href') || null;
 
-        // Player IDs from Tags section
-        const playerIds: string[] = [];
+        // Player IDs + full URLs from Tags section
+        const playerIds:  string[] = [];
+        const playerUrls: string[] = [];
         $el.find('p.tags a[href*="/player/"]').each((_, a) => {
-            const id = extractPlayerId($(a).attr('href') || '');
-            if (id) playerIds.push(id);
+            const href = $(a).attr('href') || '';
+            const id   = extractPlayerId(href);
+            if (!id) return;
+            playerIds.push(id);
+            const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
+            playerUrls.push(fullUrl);
         });
 
-        articles.push({ title, link, dateStr, published, imgSrc, body, sourceName, sourceHref, playerIds });
+        articles.push({ title, link, dateStr, published, imgSrc, body, sourceName, sourceHref, playerIds, playerUrls });
     });
 
     return articles;
@@ -187,42 +193,32 @@ async function fetchNewsPage(pageUrl: string): Promise<Article[]> {
 // Resolve player IDs → hb_talent UUIDs via hb_socials (type='realgm')
 // ---------------------------------------------------------------------------
 
-async function resolvePlayerIdsToUuids(playerIds: string[]): Promise<Record<string, string>> {
-    if (playerIds.length === 0) return {};
+// Resolve player URLs → hb_talent UUIDs via exact social_url match in hb_socials.
+// playerUrls are the full absolute URLs from article tags, e.g.:
+//   https://basketball.realgm.com/player/LeBron-James/Summary/250
+// These match exactly what is stored in hb_socials.social_url.
+async function resolvePlayerUrlsToUuids(playerUrls: string[]): Promise<Record<string, string>> {
+    if (playerUrls.length === 0) return {};
 
-    // Primary: type='realgm' or 'REALGM' + identifier match (fastest, index-backed)
-    // Secondary: match by social_url pattern — catches entries regardless of identifier value
-    const [byIdentifier, byUrl] = await Promise.all([
-        supabase
-            .from('hb_socials')
-            .select('identifier, linked_talent')
-            .not('linked_talent', 'is', null)
-            .in('type', ['realgm', 'REALGM'])
-            .in('identifier', playerIds),
-        supabase
-            .from('hb_socials')
-            .select('social_url, linked_talent')
-            .not('linked_talent', 'is', null)
-            .in('type', ['realgm', 'REALGM']),
-    ]);
+    const { data, error } = await supabase
+        .from('hb_socials')
+        .select('social_url, linked_talent')
+        .not('linked_talent', 'is', null)
+        .in('type', ['realgm', 'REALGM'])
+        .in('social_url', playerUrls);
 
-    const idToUuid: Record<string, string> = {};
-
-    for (const row of (byIdentifier.data || [])) {
-        if (row.identifier && row.linked_talent) {
-            idToUuid[row.identifier] = row.linked_talent;
-        }
-    }
-    // Secondary: extract player ID from the social_url and match against our needed IDs
-    const playerIdSet = new Set(playerIds);
-    for (const row of (byUrl.data || [])) {
-        const id = extractPlayerId(row.social_url || '');
-        if (id && playerIdSet.has(id) && row.linked_talent && !idToUuid[id]) {
-            idToUuid[id] = row.linked_talent;
-        }
+    if (error) {
+        console.warn(`  [WARN] hb_socials lookup: ${error.message}`);
+        return {};
     }
 
-    return idToUuid;
+    const urlToUuid: Record<string, string> = {};
+    for (const row of (data || [])) {
+        if (row.social_url && row.linked_talent) {
+            urlToUuid[row.social_url] = row.linked_talent;
+        }
+    }
+    return urlToUuid;
 }
 
 // ---------------------------------------------------------------------------
@@ -291,16 +287,16 @@ async function scrapeNews(): Promise<void> {
     let insertedCount = 0;
     let failedCount   = 0;
 
-    // Batch-resolve all player IDs at once (one DB round-trip)
-    const allPlayerIds = [...new Set(newArticles.flatMap(a => a.playerIds))];
-    const idToUuid = await resolvePlayerIdsToUuids(allPlayerIds);
-    console.log(`Resolved ${Object.keys(idToUuid).length}/${allPlayerIds.length} player IDs to talent UUIDs\n`);
+    // Batch-resolve all player URLs at once (one DB round-trip, exact social_url match)
+    const allPlayerUrls = [...new Set(newArticles.flatMap(a => a.playerUrls))];
+    const urlToUuid = await resolvePlayerUrlsToUuids(allPlayerUrls);
+    console.log(`Resolved ${Object.keys(urlToUuid).length}/${allPlayerUrls.length} player URLs to talent UUIDs\n`);
 
     for (const article of newArticles) {
-        const talentUuids = [...new Set(article.playerIds.map(id => idToUuid[id]).filter(Boolean))];
+        const talentUuids = [...new Set(article.playerUrls.map(url => urlToUuid[url]).filter(Boolean))];
 
         console.log(`[INS] ${article.title}`);
-        console.log(`  players: [${article.playerIds.join(', ')}] → ${talentUuids.length} UUID(s)`);
+        console.log(`  players: [${article.playerIds.join(', ')}] → ${talentUuids.length} UUID(s) resolved`);
 
         const { publication, author } = parseSourceCredit(article.sourceName);
         const sourceName = publication
