@@ -221,8 +221,17 @@ async function scrapeNews(): Promise<void> {
         if (arts.length < 5) break;
     }
 
-    console.log(`\nTotal articles found: ${allArticles.length}`);
-    if (allArticles.length === 0) {
+    // Deduplicate across pages — same article can appear on multiple listing pages
+    const seenLinks = new Set<string>();
+    const uniqueArticles = allArticles.filter(a => {
+        if (seenLinks.has(a.link)) return false;
+        seenLinks.add(a.link);
+        return true;
+    });
+    console.log(`\nTotal articles found: ${allArticles.length} (${uniqueArticles.length} unique)`);
+    const allArticlesDeduped = uniqueArticles;
+
+    if (allArticlesDeduped.length === 0) {
         console.warn('  No articles found — check selector or proxy.');
         await logWorkflowRun('success', 0);
         return;
@@ -232,12 +241,12 @@ async function scrapeNews(): Promise<void> {
     const { data: existing } = await supabase
         .from('news')
         .select('source_link')
-        .in('source_link', allArticles.map(a => a.link));
+        .in('source_link', allArticlesDeduped.map(a => a.link));
 
     const existingLinks = new Set((existing || []).map(e => e.source_link));
-    const newArticles = allArticles.filter(a => !existingLinks.has(a.link));
+    const newArticles = allArticlesDeduped.filter(a => !existingLinks.has(a.link));
 
-    console.log(`Already in DB: ${allArticles.length - newArticles.length} | New to process: ${newArticles.length}\n`);
+    console.log(`Already in DB: ${allArticlesDeduped.length - newArticles.length} | New to process: ${newArticles.length}\n`);
 
     if (newArticles.length === 0) {
         console.log('Nothing new — all articles already in the database.');
