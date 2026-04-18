@@ -178,17 +178,29 @@ async function fetchNewsPage(pageUrl: string): Promise<NewsPageResult> {
         const sourceName  = $sourceLink.text().trim() || null;
         const sourceHref  = $sourceLink.attr('href') || null;
 
-        // Player IDs + full URLs from Tags section
-        const playerIds:  string[] = [];
-        const playerUrls: string[] = [];
-        $el.find('p.tags a[href*="/player/"]').each((_, a) => {
-            const href = $(a).attr('href') || '';
-            const id   = extractPlayerId(href);
-            if (!id) return;
-            playerIds.push(id);
-            const fullUrl = href.startsWith('http') ? href : `${BASE_URL}${href}`;
-            playerUrls.push(fullUrl);
-        });
+        // Player IDs + full URLs from Tags section AND article body links.
+        // Some listing-page articles have no <p class="tags"> player links even when
+        // a player is clearly tagged — so we harvest from both sources and deduplicate.
+        const playerIdSet:  Set<string> = new Set();
+        const playerUrlSet: Set<string> = new Set();
+
+        const collectPlayerLinks = (selector: string) => {
+            $el.find(selector).each((_, a) => {
+                const h = $(a).attr('href') || '';
+                const id = extractPlayerId(h);
+                if (!id) return;
+                if (playerIdSet.has(id)) return; // already seen
+                playerIdSet.add(id);
+                const fullUrl = h.startsWith('http') ? h : `${BASE_URL}${h}`;
+                playerUrlSet.add(fullUrl);
+            });
+        };
+
+        collectPlayerLinks('p.tags a[href*="/player/"]');
+        collectPlayerLinks('div.article-body a[href*="/player/"]');
+
+        const playerIds  = [...playerIdSet];
+        const playerUrls = [...playerUrlSet];
 
         articles.push({ title, link, dateStr, published, imgSrc, body, sourceName, sourceHref, playerIds, playerUrls });
     });
@@ -211,15 +223,25 @@ async function fetchNewsPage(pageUrl: string): Promise<NewsPageResult> {
 async function resolvePlayerUrlsToUuids(playerUrls: string[]): Promise<Record<string, string>> {
     if (playerUrls.length === 0) return {};
 
-    const { data, error } = await supabase
-        .from('hb_socials')
-        .select('social_url, linked_talent')
-        .not('linked_talent', 'is', null)
-        .in('type', SOCIAL_TYPES)
-        .in('social_url', playerUrls);
+    let data: any[] | null = null;
+    let lastError: any = null;
 
-    if (error) {
-        console.warn(`  [WARN] hb_socials lookup: ${error.message}`);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        if (attempt > 1) await new Promise(r => setTimeout(r, 3000)); // wait for DB warm-up
+        const { data: rows, error } = await supabase
+            .from('hb_socials')
+            .select('social_url, linked_talent')
+            .not('linked_talent', 'is', null)
+            .in('type', SOCIAL_TYPES)
+            .in('social_url', playerUrls);
+
+        if (!error) { data = rows; lastError = null; break; }
+        lastError = error;
+        console.warn(`  [WARN] hb_socials lookup attempt ${attempt}: ${error.message}`);
+    }
+
+    if (lastError) {
+        console.warn(`  [WARN] hb_socials lookup failed after retries: ${lastError.message}`);
         return {};
     }
 
