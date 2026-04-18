@@ -130,10 +130,15 @@ async function logWorkflowRun(status: string, durationSecs?: number, lastError?:
 //     </div>
 //   </div>
 
-async function fetchNewsPage(pageUrl: string): Promise<Article[]> {
+interface NewsPageResult {
+    articles: Article[];
+    nextUrl:  string | null;  // "Older Wiretaps" link, or null if last page
+}
+
+async function fetchNewsPage(pageUrl: string): Promise<NewsPageResult> {
     console.log(`  Fetching: ${pageUrl}`);
     const html = await fetchViaProxy(pageUrl);
-    if (!html) return [];
+    if (!html) return { articles: [], nextUrl: null };
 
     const $        = cheerio.load(html);
     const articles: Article[] = [];
@@ -186,7 +191,11 @@ async function fetchNewsPage(pageUrl: string): Promise<Article[]> {
         articles.push({ title, link, dateStr, published, imgSrc, body, sourceName, sourceHref, playerIds, playerUrls });
     });
 
-    return articles;
+    // Find "Older Wiretaps" link for next page — href="/nba/news/older/N"
+    const olderHref = $('a[href*="/older/"]').first().attr('href') || null;
+    const nextUrl   = olderHref ? (olderHref.startsWith('http') ? olderHref : `${BASE_URL}${olderHref}`) : null;
+
+    return { articles, nextUrl };
 }
 
 // ---------------------------------------------------------------------------
@@ -233,21 +242,23 @@ async function scrapeNews(): Promise<void> {
     await logWorkflowRun('running');
 
     // -- Collect articles from listing pages --
-    // Track seen wiretap links across pages — if a page adds no new articles,
-    // RealGM has no more pages (pagination parameter is being ignored) so we stop.
+    // Follow "Older Wiretaps" links (href="/nba/news/older/N") for pagination.
+    // Stop when: no nextUrl found, MAX_PAGES reached, or a page adds 0 new articles.
     const allArticlesDeduped: Article[] = [];
     const seenLinks = new Set<string>();
 
-    for (let page = 1; MAX_PAGES === 0 || page <= MAX_PAGES; page++) {
-        const pageUrl = page === 1 ? NEWS_URL : `${NEWS_URL}?page=${page}`;
-        console.log(`Fetching news page ${page}: ${pageUrl}`);
-        const arts = await fetchNewsPage(pageUrl);
+    let currentUrl: string | null = NEWS_URL;
+    let page = 0;
+    while (currentUrl && (MAX_PAGES === 0 || page < MAX_PAGES)) {
+        page++;
+        console.log(`Fetching news page ${page}: ${currentUrl}`);
+        const { articles: arts, nextUrl } = await fetchNewsPage(currentUrl);
         const newArts = arts.filter(a => !seenLinks.has(a.link));
         arts.forEach(a => seenLinks.add(a.link));
         console.log(`  Found ${arts.length} article(s), ${newArts.length} new`);
-        if (newArts.length === 0) { console.log('  No new articles — end of pagination'); break; }
         allArticlesDeduped.push(...newArts);
-        if (arts.length < 5) break; // clearly last page
+        if (!nextUrl) { console.log('  No older wiretaps link — reached last page'); break; }
+        currentUrl = nextUrl;
     }
 
     console.log(`\nTotal unique articles: ${allArticlesDeduped.length}`);
