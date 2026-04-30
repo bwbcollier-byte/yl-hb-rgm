@@ -28,7 +28,7 @@ jobs:
             -H "apikey: $SUPABASE_SERVICE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"p_workflow_id": ${{ vars.WORKFLOW_ID_REALGM_NEWS_SCRAPER }}, "p_status": "running", "p_run_id": "${{ github.run_id }}"}'
+            -d '{"p_workflow_id": ${{ secrets.WORKFLOW_ID_REALGM_NEWS_SCRAPER }}, "p_status": "running", "p_run_id": "${{ github.run_id }}"}'
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -48,7 +48,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
           MAX_PAGES: ${{ github.event.inputs.max_pages || '0' }}
-          WORKFLOW_ID: ${{ vars.WORKFLOW_ID_REALGM_NEWS_SCRAPER }}
+          WORKFLOW_ID: ${{ secrets.WORKFLOW_ID_REALGM_NEWS_SCRAPER }}
           BASE_URL: "https://basketball.realgm.com"
           NEWS_PATH: "/nba/news"
           SPORT_LABEL: "NBA"
@@ -63,7 +63,7 @@ jobs:
         run: |
           DURATION=$(( $(date +%s) - $START_TIME ))
           STATUS="${{ job.status }}"
-          PAYLOAD=$(printf '{"p_workflow_id": ${{ vars.WORKFLOW_ID_REALGM_NEWS_SCRAPER }}, "p_status": "%s", "p_duration_secs": %s, "p_run_id": "${{ github.run_id }}"}' "$STATUS" "$DURATION")
+          PAYLOAD=$(printf '{"p_workflow_id": ${{ secrets.WORKFLOW_ID_REALGM_NEWS_SCRAPER }}, "p_status": "%s", "p_duration_secs": %s, "p_run_id": "${{ github.run_id }}"}' "$STATUS" "$DURATION")
           curl -s -X POST "$SUPABASE_URL/rest/v1/rpc/log_workflow_run" \
             -H "apikey: $SUPABASE_SERVICE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
