@@ -1,0 +1,115 @@
+name: RealGM News Scrapers
+
+# Consolidated workflow — matrix-runs the 5 sport-specific news scrapers
+# (NBA, Baseball, Hockey, NFL, Soccer) that previously lived in separate files.
+# Each cron schedule maps to exactly one matrix entry; workflow_dispatch lets
+# you pick one sport or run all.
+
+on:
+  schedule:
+    - cron: '0 11 * * *'   # NBA
+    - cron: '15 11 * * *'  # NFL
+    - cron: '30 11 * * *'  # Baseball
+    - cron: '45 11 * * *'  # Soccer
+    - cron: '0 12 * * *'   # Hockey
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which sport to scrape
+        type: choice
+        default: all
+        options: [all, nba, baseball, hockey, nfl, soccer]
+      max_pages:
+        description: News listing pages to check (0 = all)
+        required: false
+        default: '0'
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  scrape:
+    name: ${{ matrix.target.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    concurrency:
+      group: realgm-news-${{ matrix.target.name }}
+      cancel-in-progress: false
+    if: |
+      (github.event_name == 'schedule' && matrix.target.cron == github.event.schedule) ||
+      (github.event_name == 'workflow_dispatch' && (github.event.inputs.target == 'all' || github.event.inputs.target == matrix.target.name))
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { name: nba,      cron: '0 11 * * *',  base_url: 'https://basketball.realgm.com', news_path: '/nba/news', sport_label: 'NBA',      social_types: 'REALGM,realgm',         secret_name: 'WORKFLOW_ID_REALGM_NEWS_SCRAPER' }
+          - { name: nfl,      cron: '15 11 * * *', base_url: 'https://football.realgm.com',   news_path: '/news/',    sport_label: 'NFL',      social_types: 'REALGM_NFL,realgm_nfl', secret_name: 'WORKFLOW_ID_REALGM_NFL_NEWS_SCRAPER' }
+          - { name: baseball, cron: '30 11 * * *', base_url: 'https://baseball.realgm.com',   news_path: '/news/',    sport_label: 'Baseball', social_types: 'REALGM_MLB,realgm_mlb', secret_name: 'WORKFLOW_ID_REALGM_BASEBALL_NEWS_SCRAPER' }
+          - { name: soccer,   cron: '45 11 * * *', base_url: 'https://soccer.realgm.com',     news_path: '/news/',    sport_label: 'Soccer',   social_types: 'REALGM_SOC,realgm_soc', secret_name: 'WORKFLOW_ID_REALGM_SOCCER_NEWS_SCRAPER' }
+          - { name: hockey,   cron: '0 12 * * *',  base_url: 'https://hockey.realgm.com',     news_path: '/news/',    sport_label: 'Hockey',   social_types: 'REALGM_NHL,realgm_nhl', secret_name: 'WORKFLOW_ID_REALGM_HOCKEY_NEWS_SCRAPER' }
+
+    steps:
+      - name: Notify Supabase — start
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # Map the per-sport secret name to a single env var. We can't dynamically
+          # reference secrets by computed name in env: directly, so use fromJSON-ish
+          # trick: pass all five secrets in and pick by matrix.target.name.
+          WORKFLOW_ID_REALGM_NEWS_SCRAPER:           ${{ secrets.WORKFLOW_ID_REALGM_NEWS_SCRAPER }}
+          WORKFLOW_ID_REALGM_NFL_NEWS_SCRAPER:       ${{ secrets.WORKFLOW_ID_REALGM_NFL_NEWS_SCRAPER }}
+          WORKFLOW_ID_REALGM_BASEBALL_NEWS_SCRAPER:  ${{ secrets.WORKFLOW_ID_REALGM_BASEBALL_NEWS_SCRAPER }}
+          WORKFLOW_ID_REALGM_SOCCER_NEWS_SCRAPER:    ${{ secrets.WORKFLOW_ID_REALGM_SOCCER_NEWS_SCRAPER }}
+          WORKFLOW_ID_REALGM_HOCKEY_NEWS_SCRAPER:    ${{ secrets.WORKFLOW_ID_REALGM_HOCKEY_NEWS_SCRAPER }}
+          SECRET_NAME: ${{ matrix.target.secret_name }}
+        run: |
+          # Indirect lookup: use the secret name from the matrix to grab the right value
+          WORKFLOW_ID="${!SECRET_NAME}"
+          echo "START_TIME=$(date +%s)" >> "$GITHUB_ENV"
+          echo "WORKFLOW_ID=$WORKFLOW_ID" >> "$GITHUB_ENV"
+          curl -fsS -X POST "$SUPABASE_URL/rest/v1/rpc/log_workflow_run" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"p_workflow_id\": $WORKFLOW_ID, \"p_status\": \"running\", \"p_run_id\": \"${{ github.run_id }}\"}"
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Run RealGM ${{ matrix.target.sport_label }} news scraper
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          RAPIDAPI_KEY:         ${{ secrets.RAPIDAPI_KEY }}
+          MAX_PAGES:            ${{ github.event.inputs.max_pages || '0' }}
+          BASE_URL:             ${{ matrix.target.base_url }}
+          NEWS_PATH:            ${{ matrix.target.news_path }}
+          SPORT_LABEL:          ${{ matrix.target.sport_label }}
+          SOCIAL_TYPES:         ${{ matrix.target.social_types }}
+          # WORKFLOW_ID is exported into $GITHUB_ENV by the previous step
+        run: npx tsx src/realgm-news-scraper.ts
+
+      - name: Notify Supabase — result
+        if: always()
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          DURATION=$(( $(date +%s) - START_TIME ))
+          STATUS="${{ job.status }}"
+          curl -fsS -X POST "$SUPABASE_URL/rest/v1/rpc/log_workflow_run" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"p_workflow_id\": $WORKFLOW_ID, \"p_status\": \"$STATUS\", \"p_duration_secs\": $DURATION, \"p_run_id\": \"${{ github.run_id }}\"}"

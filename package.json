@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "realgm-news-scraper": "ts-node --transpile-only src/realgm-news-scraper.ts"
+    "realgm-news-scraper": "tsx src/realgm-news-scraper.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
@@ -12,7 +12,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "tsx": "^4.19.0"
   }
 }
