@@ -78,7 +78,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"p_workflow_id\": $WORKFLOW_ID, \"p_status\": \"running\", \"p_run_id\": \"${{ github.run_id }}\"}"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-node@v4
         with:
